@@ -1,5 +1,6 @@
 import base64
 import re
+import time
 from typing import Dict, Any, List
 from supabase import create_client, Client
 from logger import ColorLogger
@@ -155,7 +156,7 @@ class SupabaseRepository:
                 ColorLogger.warning(f"Failed to save document {clean_name}: {e}")
     
     def _clean_document_name(self, name: str) -> str:
-        name = re.sub(r'[(),."\']+', '', name)
+        name = re.sub(r'[(),."\':\$]+', '', name)
         name = name.replace(' ', '-')
         
         if not name.lower().endswith('.pdf'):
