@@ -31,22 +31,18 @@ class TokenManager:
     def start(self):
         ColorLogger.info("Starting Token Manager...")
         
-        ColorLogger.info(f"Pre-filling captcha buffer ({self.buffer_size} solutions)...")
-        for i in range(self.buffer_size):
-            captcha_code = self.captcha_service.solve_captcha()
-            if captcha_code:
-                self.captcha_buffer.put(captcha_code)
-                ColorLogger.success(f"Captcha {i+1}/{self.buffer_size} buffered")
-            else:
-                ColorLogger.error(f"Captcha {i+1}/{self.buffer_size} failed")
+        ColorLogger.info("Solving initial captcha...")
+        initial_captcha = self.captcha_service.solve_captcha()
+        if not initial_captcha:
+            raise RuntimeError("Failed to solve initial captcha")
         
-        initial_captcha = self.captcha_buffer.get()
+        ColorLogger.success("Initial captcha solved")
+        
         self.current_token = self.token_service.get_token(initial_captcha)
-        
         if not self.current_token:
             raise RuntimeError("Failed to obtain initial token")
         
-        ColorLogger.success("Initial token obtained")
+        ColorLogger.success("Initial token obtained - Starting background workers...")
         
         self._captcha_thread = threading.Thread(target=self._captcha_worker, daemon=True)
         self._captcha_thread.start()
@@ -54,7 +50,7 @@ class TokenManager:
         self._token_refresh_thread = threading.Thread(target=self._token_refresh_worker, daemon=True)
         self._token_refresh_thread.start()
         
-        ColorLogger.success("Token Manager started")
+        ColorLogger.success("Token Manager ready")
     
     def stop(self):
         ColorLogger.info("Stopping Token Manager...")
@@ -117,14 +113,15 @@ class CaseProcessor:
         self.document_workers = document_workers
         self.max_retries = max_retries
     
-    def process_case(self, case_data: Dict[str, Any]) -> Dict[str, Any]:
+    def process_case(self, case_data: Dict[str, Any]) -> tuple[Dict[str, Any], Dict[str, int]]:
         case_number = case_data.get("data", {}).get("caseNumber", "Unknown")
         
         document_ids = self._extract_document_ids(case_data)
         
+        stats = {"total": len(document_ids), "downloaded": 0, "failed": 0}
+        
         if not document_ids:
-            ColorLogger.info(f"{case_number}: No documents")
-            return case_data
+            return case_data, stats
         
         ColorLogger.processing(f"{case_number}: Downloading {len(document_ids)} documents...")
         
@@ -132,9 +129,13 @@ class CaseProcessor:
         
         self._inject_documents_into_case(case_data, document_map)
         
-        ColorLogger.success(f"{case_number}: {len(document_map)}/{len(document_ids)} documents downloaded")
+        stats["downloaded"] = len(document_map)
+        stats["failed"] = len(document_ids) - len(document_map)
         
-        return case_data
+        if stats["downloaded"] > 0:
+            ColorLogger.success(f"{case_number}: {stats['downloaded']}/{stats['total']} documents downloaded")
+        
+        return case_data, stats
     
     def _extract_document_ids(self, case_data: Dict[str, Any]) -> List[str]:
         document_ids = []

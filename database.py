@@ -8,35 +8,38 @@ from logger import ColorLogger
 
 class SupabaseRepository:
     def __init__(self, supabase_url: str, supabase_key: str):
+        if not supabase_url.endswith('/'):
+            supabase_url = supabase_url + '/'
         self.client: Client = create_client(supabase_url, supabase_key)
         self.bucket_name = "documents"
     
-    def save_case(self, case_data: Dict[str, Any]) -> bool:
+    def save_case(self, case_data: Dict[str, Any]) -> Dict[str, Any]:
         try:
             data = case_data.get("data", {})
             case_number = data.get("caseNumber")
             
             if not case_number:
                 ColorLogger.error("Case data missing caseNumber")
-                return False
+                return {"success": False, "doc_stats": {"total": 0, "uploaded": 0, "failed": 0}}
             
             self._save_case_info(data, case_number)
             self._save_parties(data, case_number)
             self._save_attorneys(data, case_number)
             self._save_hearings(data, case_number)
-            self._save_documents(data, case_number)
+            doc_stats = self._save_documents(data, case_number)
             
-            return True
+            return {"success": True, "doc_stats": doc_stats}
                 
         except Exception as e:
             ColorLogger.error(f"Supabase save error: {e}")
-            return False
+            return {"success": False, "doc_stats": {"total": 0, "uploaded": 0, "failed": 0}}
     
     def case_exists(self, case_number: str) -> bool:
         try:
             response = self.client.table("cases").select("case_number").eq("case_number", case_number).execute()
-            return len(response.data) > 0
+            return len(response.data) > 0 if response.data else False
         except Exception as e:
+            ColorLogger.warning(f"Error checking case existence: {e}")
             return False
     
     def _save_case_info(self, data: Dict[str, Any], case_number: str):
@@ -50,11 +53,16 @@ class SupabaseRepository:
         }
         
         self.client.table("cases").upsert(case_record, on_conflict="case_number").execute()
+        time.sleep(0.05)
     
     def _save_parties(self, data: Dict[str, Any], case_number: str):
         parties = data.get("caseParties", [])
         
-        self.client.table("parties").delete().eq("case_number", case_number).execute()
+        try:
+            self.client.table("parties").delete().eq("case_number", case_number).execute()
+            time.sleep(0.05)
+        except Exception as e:
+            ColorLogger.warning(f"Error deleting old parties: {e}")
         
         for party in parties:
             party_record = {
@@ -70,11 +78,16 @@ class SupabaseRepository:
             }
             
             self.client.table("parties").insert(party_record).execute()
+            time.sleep(0.03)
     
     def _save_attorneys(self, data: Dict[str, Any], case_number: str):
         attorneys = data.get("caseAttornies", [])
         
-        self.client.table("attorneys").delete().eq("case_number", case_number).execute()
+        try:
+            self.client.table("attorneys").delete().eq("case_number", case_number).execute()
+            time.sleep(0.05)
+        except Exception as e:
+            ColorLogger.warning(f"Error deleting old attorneys: {e}")
         
         for attorney in attorneys:
             attorney_record = {
@@ -88,11 +101,16 @@ class SupabaseRepository:
             }
             
             self.client.table("attorneys").insert(attorney_record).execute()
+            time.sleep(0.03)
     
     def _save_hearings(self, data: Dict[str, Any], case_number: str):
         hearings = data.get("caseHearings", [])
         
-        self.client.table("hearings").delete().eq("case_number", case_number).execute()
+        try:
+            self.client.table("hearings").delete().eq("case_number", case_number).execute()
+            time.sleep(0.05)
+        except Exception as e:
+            ColorLogger.warning(f"Error deleting old hearings: {e}")
         
         for hearing in hearings:
             hearing_record = {
@@ -106,8 +124,9 @@ class SupabaseRepository:
             }
             
             self.client.table("hearings").insert(hearing_record).execute()
+            time.sleep(0.03)
     
-    def _save_documents(self, data: Dict[str, Any], case_number: str):
+    def _save_documents(self, data: Dict[str, Any], case_number: str) -> Dict[str, int]:
         document_list = []
         
         for event in data.get("caseEvents", []):
@@ -136,8 +155,14 @@ class SupabaseRepository:
                         "pdf_base64": pdf_base64
                     })
         
+        stats = {"total": len(document_list), "uploaded": 0, "failed": 0}
+        
         if document_list:
-            self.client.table("documents").delete().eq("case_number", case_number).execute()
+            try:
+                self.client.table("documents").delete().eq("case_number", case_number).execute()
+                time.sleep(0.1)
+            except Exception as e:
+                ColorLogger.warning(f"Error deleting old documents: {e}")
         
         for doc in document_list:
             clean_name = self._clean_document_name(doc["documentName"])
@@ -149,11 +174,19 @@ class SupabaseRepository:
             
             try:
                 self.client.table("documents").insert(doc_record).execute()
+                time.sleep(0.05)
                 
                 if doc.get("pdf_base64"):
-                    self._upload_pdf_to_storage(case_number, clean_name, doc["pdf_base64"])
+                    if self._upload_pdf_to_storage(case_number, clean_name, doc["pdf_base64"]):
+                        stats["uploaded"] += 1
+                    else:
+                        stats["failed"] += 1
             except Exception as e:
+                stats["failed"] += 1
                 ColorLogger.warning(f"Failed to save document {clean_name}: {e}")
+                time.sleep(0.1)
+        
+        return stats
     
     def _clean_document_name(self, name: str) -> str:
         name = re.sub(r'[(),."\':\$]+', '', name)
@@ -164,9 +197,8 @@ class SupabaseRepository:
         
         return name
     
-    def _upload_pdf_to_storage(self, case_number: str, document_name: str, base64_content: str):
+    def _upload_pdf_to_storage(self, case_number: str, document_name: str, base64_content: str) -> bool:
         max_retries = 3
-        retry_delay = 1
         
         for attempt in range(max_retries):
             try:
@@ -179,14 +211,16 @@ class SupabaseRepository:
                     file_options={"content-type": "application/pdf", "upsert": "true"}
                 )
                 
-                time.sleep(0.1)
-                return
+                return True
                 
             except Exception as e:
                 if attempt < max_retries - 1:
-                    time.sleep(retry_delay * (attempt + 1))
+                    time.sleep(0.5 * (attempt + 1))
                 else:
-                    ColorLogger.warning(f"Failed to upload {document_name}: {e}")
+                    ColorLogger.warning(f"Upload failed after {max_retries} attempts: {document_name}")
+                    return False
+        
+        return False
     
     def close(self):
         ColorLogger.success("Supabase connection closed")

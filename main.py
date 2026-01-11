@@ -16,8 +16,6 @@ def main():
             ColorLogger.error("CAPSOLVER_API_KEY not set in .env file")
             sys.exit(1)
         
-        ColorLogger.info(f"CapSolver API Key: {config.capsolver_api_key[:10]}...{config.capsolver_api_key[-5:]}")
-        
         scraper = CourtScraper(config)
         scraper.run("case_ids.csv")
         

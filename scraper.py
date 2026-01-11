@@ -1,5 +1,6 @@
 import csv
 import time
+import threading
 from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List
@@ -56,10 +57,16 @@ class CourtScraper:
             "total": 0,
             "success": 0,
             "failed": 0,
-            "skipped": 0
+            "skipped": 0,
+            "total_documents": 0,
+            "documents_downloaded": 0,
+            "documents_failed_download": 0,
+            "documents_uploaded": 0,
+            "documents_failed_upload": 0
         }
         
         self.failed_cases = []
+        self.stats_lock = threading.Lock()
     
     def run(self, case_ids_file: str):
         start_time = time.time()
@@ -124,56 +131,81 @@ class CourtScraper:
                 token = self.token_manager.get_token()
                 if not token:
                     if attempt < self.config.max_retries - 1:
-                        time.sleep(5)
+                        ColorLogger.warning(f"Case {case_id}: No token available, retrying...")
+                        time.sleep(3)
                         continue
                     else:
-                        ColorLogger.error(f"Case {case_id}: No token")
-                        self.stats["failed"] += 1
-                        self.failed_cases.append(case_id)
+                        ColorLogger.error(f"Case {case_id}: No token after {self.config.max_retries} attempts")
+                        with self.stats_lock:
+                            self.stats["failed"] += 1
+                            self.failed_cases.append(case_id)
                         return
                 
                 case_data = self.case_service.get_case_data(case_id, token)
                 
-                if not case_data:
+                if not case_data or not case_data.get("data"):
                     if attempt < self.config.max_retries - 1:
+                        ColorLogger.warning(f"Case {case_id}: Fetch failed, retrying...")
                         time.sleep(2)
                         continue
                     else:
-                        ColorLogger.error(f"Case {case_id}: Failed")
-                        self.stats["failed"] += 1
-                        self.failed_cases.append(case_id)
+                        ColorLogger.error(f"Case {case_id}: Failed after {self.config.max_retries} attempts")
+                        with self.stats_lock:
+                            self.stats["failed"] += 1
+                            self.failed_cases.append(case_id)
                         return
                 
-                case_number = case_data.get("data", {}).get("caseNumber", "Unknown")
+                case_number = case_data.get("data", {}).get("caseNumber")
+                if not case_number:
+                    ColorLogger.error(f"Case {case_id}: No case number in response")
+                    with self.stats_lock:
+                        self.stats["failed"] += 1
+                        self.failed_cases.append(case_id)
+                    return
                 
                 if self.repository.case_exists(case_number):
                     ColorLogger.skip(f"{case_number}: Already exists")
-                    self.stats["skipped"] += 1
+                    with self.stats_lock:
+                        self.stats["skipped"] += 1
                     return
                 
-                processed_case = self.case_processor.process_case(case_data)
+                processed_case, doc_stats = self.case_processor.process_case(case_data)
                 
-                if self.repository.save_case(processed_case):
+                save_result = self.repository.save_case(processed_case)
+                
+                with self.stats_lock:
+                    self.stats["total_documents"] += doc_stats["total"]
+                    self.stats["documents_downloaded"] += doc_stats["downloaded"]
+                    self.stats["documents_failed_download"] += doc_stats["failed"]
+                    self.stats["documents_uploaded"] += save_result["doc_stats"]["uploaded"]
+                    self.stats["documents_failed_upload"] += save_result["doc_stats"]["failed"]
+                
+                if save_result["success"]:
                     ColorLogger.success(f"{case_number}: Saved to Supabase")
-                    self.stats["success"] += 1
+                    with self.stats_lock:
+                        self.stats["success"] += 1
                     return
                 else:
                     if attempt < self.config.max_retries - 1:
+                        ColorLogger.warning(f"{case_number}: Save failed, retrying...")
                         time.sleep(2)
                         continue
                     else:
-                        ColorLogger.error(f"{case_number}: Save failed")
-                        self.stats["failed"] += 1
-                        self.failed_cases.append(case_id)
+                        ColorLogger.error(f"{case_number}: Save failed after {self.config.max_retries} attempts")
+                        with self.stats_lock:
+                            self.stats["failed"] += 1
+                            self.failed_cases.append(case_id)
                         return
                 
             except Exception as e:
                 if attempt < self.config.max_retries - 1:
+                    ColorLogger.warning(f"Case {case_id}: Error - {e}, retrying...")
                     time.sleep(2)
                 else:
                     ColorLogger.error(f"Case {case_id}: {e}")
-                    self.stats["failed"] += 1
-                    self.failed_cases.append(case_id)
+                    with self.stats_lock:
+                        self.stats["failed"] += 1
+                        self.failed_cases.append(case_id)
     
     def _print_header(self, start_datetime: str):
         print(f"\n{Fore.CYAN}{'='*80}{Style.RESET_ALL}")
@@ -188,22 +220,45 @@ class CourtScraper:
         minutes = int(duration // 60)
         seconds = int(duration % 60)
         
+        cases_per_min = (self.stats['success'] / (duration / 60)) if duration > 0 else 0
+        docs_per_min = (self.stats['documents_downloaded'] / (duration / 60)) if duration > 0 else 0
+        
         print(f"\n{Fore.CYAN}{'='*80}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}{'Scraping Summary':^80}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}{'SCRAPING SUMMARY':^80}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}{'='*80}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}Start Time:     {start_datetime}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}End Time:       {end_datetime}{Style.RESET_ALL}")
-        print(f"{Fore.CYAN}Duration:       {minutes}m {seconds}s ({duration:.2f} seconds){Style.RESET_ALL}")
+        
+        print(f"{Fore.CYAN}⏱  Start Time:     {start_datetime}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}⏱  End Time:       {end_datetime}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}⏱  Duration:       {minutes}m {seconds}s ({duration:.2f} seconds){Style.RESET_ALL}")
+        print(f"{Fore.CYAN}⚡ Speed:          {cases_per_min:.2f} cases/min | {docs_per_min:.2f} docs/min{Style.RESET_ALL}")
+        
+        print(f"\n{Fore.CYAN}{'CASES':^80}{Style.RESET_ALL}")
         print(f"{Fore.CYAN}{'-'*80}{Style.RESET_ALL}")
-        print(f"{Fore.WHITE}Total Cases:    {self.stats['total']}{Style.RESET_ALL}")
-        print(f"{Fore.GREEN}✓ Success:      {self.stats['success']}{Style.RESET_ALL}")
-        print(f"{Fore.YELLOW}⊘ Skipped:      {self.stats['skipped']}{Style.RESET_ALL}")
-        print(f"{Fore.RED}✗ Failed:       {self.stats['failed']}{Style.RESET_ALL}")
+        print(f"{Fore.WHITE}📊 Total Cases:    {self.stats['total']}{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}✓  Success:        {self.stats['success']}{Style.RESET_ALL}")
+        print(f"{Fore.YELLOW}⊘  Skipped:        {self.stats['skipped']}{Style.RESET_ALL}")
+        print(f"{Fore.RED}✗  Failed:         {self.stats['failed']}{Style.RESET_ALL}")
+        
+        print(f"\n{Fore.CYAN}{'DOCUMENTS':^80}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}{'-'*80}{Style.RESET_ALL}")
+        print(f"{Fore.WHITE}📄 Total Documents:        {self.stats['total_documents']}{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}⬇  Downloaded:             {self.stats['documents_downloaded']}{Style.RESET_ALL}")
+        print(f"{Fore.RED}✗  Failed Download:        {self.stats['documents_failed_download']}{Style.RESET_ALL}")
+        print(f"{Fore.GREEN}⬆  Uploaded to Storage:    {self.stats['documents_uploaded']}{Style.RESET_ALL}")
+        print(f"{Fore.RED}✗  Failed Upload:          {self.stats['documents_failed_upload']}{Style.RESET_ALL}")
+        
+        download_rate = (self.stats['documents_downloaded'] / self.stats['total_documents'] * 100) if self.stats['total_documents'] > 0 else 0
+        upload_rate = (self.stats['documents_uploaded'] / self.stats['documents_downloaded'] * 100) if self.stats['documents_downloaded'] > 0 else 0
+        
+        print(f"\n{Fore.CYAN}{'PERFORMANCE':^80}{Style.RESET_ALL}")
+        print(f"{Fore.CYAN}{'-'*80}{Style.RESET_ALL}")
+        print(f"{Fore.WHITE}📈 Download Success Rate:  {download_rate:.1f}%{Style.RESET_ALL}")
+        print(f"{Fore.WHITE}📈 Upload Success Rate:    {upload_rate:.1f}%{Style.RESET_ALL}")
         
         if self.failed_cases:
+            print(f"\n{Fore.CYAN}{'FAILED CASES':^80}{Style.RESET_ALL}")
             print(f"{Fore.CYAN}{'-'*80}{Style.RESET_ALL}")
-            print(f"{Fore.RED}Failed Case IDs:{Style.RESET_ALL}")
             for case_id in self.failed_cases:
-                print(f"{Fore.RED}  - {case_id}{Style.RESET_ALL}")
+                print(f"{Fore.RED}  ✗ {case_id}{Style.RESET_ALL}")
         
-        print(f"{Fore.CYAN}{'='*80}{Style.RESET_ALL}\n")
+        print(f"\n{Fore.CYAN}{'='*80}{Style.RESET_ALL}\n")
