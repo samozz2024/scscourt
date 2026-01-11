@@ -23,8 +23,13 @@ class CaptchaService:
             ColorLogger.success("reCAPTCHA solved")
             return token
         except Exception as e:
-            ColorLogger.error(f"reCAPTCHA failed: {e}")
-            return None
+            error_msg = str(e)
+            if "Invalid API key" in error_msg or "api key" in error_msg.lower():
+                ColorLogger.error(f"CapSolver API key error: {e}")
+                ColorLogger.error(f"API key starts with: {self.api_key[:10]}...")
+            else:
+                ColorLogger.error(f"reCAPTCHA failed: {e}")
+            raise
 
 
 class TokenService:
