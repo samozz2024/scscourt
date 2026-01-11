@@ -1,6 +1,6 @@
 from pymongo import MongoClient
 from typing import Dict, Any
-from utils.logger import ColorLogger
+from logger import ColorLogger
 
 
 class CaseRepository:

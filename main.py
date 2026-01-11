@@ -2,8 +2,8 @@ import sys
 from colorama import init
 
 from configuration import ScraperConfig
-from orchestrator import ScraperOrchestrator
-from utils.logger import ColorLogger
+from scraper import CourtScraper
+from logger import ColorLogger
 
 init(autoreset=True)
 
@@ -16,8 +16,8 @@ def main():
             ColorLogger.error("CAPSOLVER_API_KEY not set in .env file")
             sys.exit(1)
         
-        orchestrator = ScraperOrchestrator(config)
-        orchestrator.run("case_ids.csv")
+        scraper = CourtScraper(config)
+        scraper.run("case_ids.csv")
         
     except Exception as e:
         ColorLogger.error(f"Fatal error: {e}")

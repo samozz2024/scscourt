@@ -1,6 +1,6 @@
 # California Court Scraper
 
-Advanced web scraping system for California court public data with automatic token rotation, concurrent processing, and MongoDB storage.
+Advanced web scraping system for California court public data with automatic token rotation, concurrent processing, and Supabase storage.
 
 ## Features
 
@@ -9,27 +9,20 @@ Advanced web scraping system for California court public data with automatic tok
 - **Captcha Buffer System**: Maintains 2 pre-solved captchas to avoid scraping interruptions
 - **Concurrent Processing**: Processes 3 cases simultaneously, each downloading 5 documents in parallel
 - **Retry Mechanism**: Automatic retry with configurable attempts for failed requests
-- **MongoDB Storage**: Stores complete case data with embedded PDF documents
+- **Supabase Storage**: Stores case data in 5 normalized tables with PDF documents in cloud storage
 - **Colored Logging**: Clear, informative console output with progress tracking
 - **Proxy Support**: Optional proxy configuration for case data requests
 
 ## Architecture
 
 ```
-├── services/              # Core business logic
-│   ├── captcha_service.py    # reCAPTCHA v2 solving
-│   ├── token_service.py      # Token retrieval
-│   ├── case_service.py       # Case data fetching
-│   └── document_service.py   # PDF document downloading
-├── managers/              # Resource management
-│   └── token_manager.py      # Token rotation & captcha buffering
-├── processors/            # Data processing
-│   └── case_processor.py     # Case & document processing
-├── repositories/          # Data persistence
-│   └── case_repository.py    # MongoDB operations
-├── configuration.py       # Configuration management
-├── orchestrator.py        # Main orchestration logic
-└── main.py               # Application entry point
+├── logger.py          # Colored logging utility
+├── services.py        # API services (Captcha, Token, Case, Document)
+├── core.py            # TokenManager & CaseProcessor
+├── database.py        # Supabase repository with 5 tables
+├── scraper.py         # Main scraper orchestrator
+├── configuration.py   # Configuration management
+└── main.py            # Application entry point
 ```
 
 ## Setup
@@ -50,8 +43,14 @@ CAPSOLVER_API_KEY=your_capsolver_api_key_here
 PROXY_URL=http://username:password@proxy.com:port
 ```
 
-3. **Start MongoDB**
-Ensure MongoDB is running on `localhost:55000` or update `MONGODB_URI` in `.env`
+3. **Setup Supabase Database**
+Run the SQL schema in your Supabase SQL editor:
+```bash
+cat supabase_schema.sql
+```
+This creates 5 tables: cases, parties, attorneys, hearings, documents
+
+Also create a storage bucket named "documents" in Supabase Storage
 
 4. **Prepare Case IDs**
 Add case IDs to `case_ids.csv` (one per line)
@@ -71,43 +70,44 @@ All settings can be configured via environment variables in `.env`:
 | `CAPSOLVER_API_KEY` | - | CapSolver API key (required) |
 | `PROXY_URL` | - | Proxy URL for case requests |
 | `USE_PROXY` | `true` | Enable/disable proxy usage |
+| `SUPABASE_URL` | - | Supabase project URL (required) |
+| `SUPABASE_KEY` | - | Supabase API key (required) |
 | `CASE_WORKERS` | `3` | Concurrent case processing workers |
 | `DOCUMENT_WORKERS` | `5` | Concurrent document downloads per case |
 | `MAX_RETRIES` | `3` | Maximum retry attempts for failed requests |
 | `TOKEN_REFRESH_INTERVAL` | `600` | Token refresh interval (seconds) |
 | `CAPTCHA_BUFFER_SIZE` | `2` | Number of pre-solved captchas to maintain |
 | `REQUEST_TIMEOUT` | `60` | HTTP request timeout (seconds) |
-| `MONGODB_URI` | `mongodb://localhost:55000` | MongoDB connection URI |
-| `MONGODB_DATABASE` | `scscourt` | MongoDB database name |
-| `MONGODB_COLLECTION` | `cases` | MongoDB collection name |
 
 ## Data Structure
 
-Each case is stored in MongoDB with the following structure:
+Data is stored in 5 normalized Supabase tables:
 
-```json
-{
-  "data": {
-    "caseNumber": "24CV428648",
-    "caseParties": [...],
-    "caseEvents": [
-      {
-        "eventId": "121518060",
-        "documents": [
-          {
-            "documentId": "CTht8Cx139r...",
-            "documentName": "Minutes Non-Criminal",
-            "pdf_base64": "JVBERi0xLjQK..."
-          }
-        ]
-      }
-    ],
-    "caseHearings": [...],
-    ...
-  },
-  "result": 0,
-  "message": "Case number 5199169 was found"
-}
+### 1. **cases** table
+- case_number (PK), type, style, file_date, status, court_location
+
+### 2. **parties** table
+- case_number (FK), type, first_name, middle_name, last_name, nick_name, business_name, full_name, is_defendant
+
+### 3. **attorneys** table
+- case_number (FK), first_name, middle_name, last_name, representing, bar_number, is_lead
+
+### 4. **hearings** table
+- case_number (FK), hearing_id, calendar, type, date, time, hearing_result
+
+### 5. **documents** table
+- case_number (FK), document_name
+
+### PDF Storage
+PDFs are stored in Supabase Storage bucket "documents" organized by case_number:
+```
+documents/
+  ├── 24CV428648/
+  │   ├── Minutes-Non-Criminal.pdf
+  │   ├── Request-for-Dismissal.pdf
+  │   └── ...
+  └── 22CH010501/
+      └── ...
 ```
 
 ## Logging
@@ -123,3 +123,5 @@ Each case is stored in MongoDB with the following structure:
 - Proxy is used only for case data requests, not for document downloads
 - Duplicate cases (by case number) are automatically skipped
 - Failed cases are retried up to `MAX_RETRIES` times before being marked as failed
+- Document names are cleaned (special chars removed, spaces replaced with hyphens)
+- PDFs are automatically uploaded to Supabase Storage organized by case_number folders

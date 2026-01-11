@@ -6,19 +6,15 @@ from typing import List
 from colorama import Fore, Style, init
 
 from configuration import ScraperConfig
-from services.captcha_service import CaptchaService
-from services.token_service import TokenService
-from services.case_service import CaseService
-from services.document_service import DocumentService
-from managers.token_manager import TokenManager
-from processors.case_processor import CaseProcessor
-from repositories.case_repository import CaseRepository
-from utils.logger import ColorLogger
+from services import CaptchaService, TokenService, CaseService, DocumentService
+from core import TokenManager, CaseProcessor
+from database import SupabaseRepository
+from logger import ColorLogger
 
 init(autoreset=True)
 
 
-class ScraperOrchestrator:
+class CourtScraper:
     def __init__(self, config: ScraperConfig):
         self.config = config
         
@@ -51,10 +47,9 @@ class ScraperOrchestrator:
             max_retries=config.max_retries
         )
         
-        self.repository = CaseRepository(
-            mongodb_uri=config.mongodb_uri,
-            database=config.mongodb_database,
-            collection=config.mongodb_collection
+        self.repository = SupabaseRepository(
+            supabase_url=config.supabase_url,
+            supabase_key=config.supabase_key
         )
         
         self.stats = {
@@ -159,7 +154,7 @@ class ScraperOrchestrator:
                 processed_case = self.case_processor.process_case(case_data)
                 
                 if self.repository.save_case(processed_case):
-                    ColorLogger.success(f"{case_number}: Saved to MongoDB")
+                    ColorLogger.success(f"{case_number}: Saved to Supabase")
                     self.stats["success"] += 1
                     return
                 else:

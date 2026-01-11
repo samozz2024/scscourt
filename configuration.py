@@ -14,9 +14,8 @@ class ScraperConfig:
     proxy_url: str
     use_proxy: bool
     
-    mongodb_uri: str
-    mongodb_database: str
-    mongodb_collection: str
+    supabase_url: str
+    supabase_key: str
     
     case_workers: int
     document_workers: int
@@ -37,9 +36,8 @@ class ScraperConfig:
             proxy_url=os.getenv("PROXY_URL", ""),
             use_proxy=os.getenv("USE_PROXY", "true").lower() == "true",
             
-            mongodb_uri=os.getenv("MONGODB_URI", "mongodb://localhost:55000"),
-            mongodb_database=os.getenv("MONGODB_DATABASE", "scscourt"),
-            mongodb_collection=os.getenv("MONGODB_COLLECTION", "cases"),
+            supabase_url=os.getenv("SUPABASE_URL", "https://bxhcubpqxbfysudhchjx.supabase.co"),
+            supabase_key=os.getenv("SUPABASE_KEY", ""),
             
             case_workers=int(os.getenv("CASE_WORKERS", "3")),
             document_workers=int(os.getenv("DOCUMENT_WORKERS", "5")),
